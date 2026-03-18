@@ -5,14 +5,19 @@ import uuid
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from taxi_bot.config import ADMIN_PASSWORD, CONFIRM_DELAY_SECONDS, RATE_PER_KM
+from taxi_bot.config import (
+    ADMIN_PASSWORD,
+    CONFIRM_DELAY_SECONDS,
+    DRIVER_SEARCH_RADIUS_KM,
+    RATE_PER_KM,
+)
 from taxi_bot.dispatch import (
-    assign_next_online_driver,
     create_support_ticket,
     create_ride,
     grant_driver_access,
     is_driver_allowed,
     is_registered_driver,
+    offer_ride_to_nearby_drivers,
     register_driver,
     submit_ride_feedback,
     update_driver_location,
@@ -118,7 +123,9 @@ async def _send_delayed_booking_success(
             format_place_label, float(drop[0]), float(drop[1])
         )
         ride_id = create_ride(chat_id, pickup, drop, distance, total)
-        driver_id = assign_next_online_driver(ride_id)
+        offered_driver_ids = offer_ride_to_nearby_drivers(
+            ride_id, radius_km=DRIVER_SEARCH_RADIUS_KM
+        )
 
         await context.bot.send_message(
             chat_id=chat_id,
@@ -132,29 +139,36 @@ async def _send_delayed_booking_success(
             ),
         )
 
-        if driver_id is None:
+        if not offered_driver_ids:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="No drivers are online right now. We will assign one soon.",
+                text=(
+                    f"No drivers found within {DRIVER_SEARCH_RADIUS_KM:.0f} km right now.\n"
+                    "We will keep trying shortly."
+                ),
             )
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Driver request sent. You will be notified once a driver accepts.",
-            )
-            await context.bot.send_message(
-                chat_id=driver_id,
                 text=(
-                    "New ride request for you.\n"
-                    f"Ride ID: {ride_id}\n"
-                    f"Pickup: {pickup_label}\n"
-                    f"Drop: {drop_label}\n"
-                    f"Distance: {distance:.2f} km\n"
-                    f"Estimated fare: Rs {total:.2f}\n\n"
-                    "Use Driver panel and tap Accept Ride or Reject Ride."
+                    f"Ride request sent to nearby drivers within {DRIVER_SEARCH_RADIUS_KM:.0f} km.\n"
+                    "You will be notified when a driver accepts."
                 ),
-                reply_markup=driver_menu_markup(),
             )
+            for driver_id in offered_driver_ids:
+                await context.bot.send_message(
+                    chat_id=driver_id,
+                    text=(
+                        "New ride request for you.\n"
+                        f"Ride ID: {ride_id}\n"
+                        f"Pickup: {pickup_label}\n"
+                        f"Drop: {drop_label}\n"
+                        f"Distance: {distance:.2f} km\n"
+                        f"Estimated fare: Rs {total:.2f}\n\n"
+                        "Use Driver panel and tap Accept Ride or Reject Ride."
+                    ),
+                    reply_markup=driver_menu_markup(),
+                )
     else:
         await context.bot.send_message(
             chat_id=chat_id,

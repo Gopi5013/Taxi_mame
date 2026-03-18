@@ -3,6 +3,7 @@ import uuid
 
 from typing import Any
 
+from taxi_bot.config import DRIVER_SEARCH_RADIUS_KM
 from taxi_bot.database import get_connection
 
 
@@ -118,6 +119,18 @@ def driver_status_text(user_id: int) -> str:
             """,
             (user_id,),
         ).fetchone()
+        pending_row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM ride_offers o
+            JOIN rides r ON r.ride_id = o.ride_id
+            WHERE o.driver_id = ?
+              AND o.status = 'offered'
+              AND r.status = 'requested'
+              AND r.driver_id IS NULL
+            """,
+            (user_id,),
+        ).fetchone()
 
     if not row:
         return "Driver not registered. Use /driver first."
@@ -126,7 +139,8 @@ def driver_status_text(user_id: int) -> str:
     busy = "Busy" if int(row["busy"]) == 1 else "Available"
     has_location = row["latitude"] is not None and row["longitude"] is not None
     location = "Location set" if has_location else "Location missing"
-    return f"Status: {online}, {busy}, {location}"
+    pending = int(pending_row["count"]) if pending_row else 0
+    return f"Status: {online}, {busy}, {location}, Pending offers: {pending}"
 
 
 def create_ride(
@@ -162,103 +176,7 @@ def create_ride(
     return ride_id
 
 
-def assign_next_online_driver(ride_id: str) -> int | None:
-    with get_connection() as connection:
-        ride = connection.execute(
-            """
-            SELECT pickup_lat, pickup_lon
-            FROM rides
-            WHERE ride_id = ? AND status = 'requested' AND driver_id IS NULL
-            """,
-            (ride_id,),
-        ).fetchone()
-        if not ride:
-            return None
-
-        pickup_lat = float(ride["pickup_lat"])
-        pickup_lon = float(ride["pickup_lon"])
-
-        driver_rows = connection.execute(
-            """
-            SELECT user_id, latitude, longitude
-            FROM drivers
-            WHERE online = 1
-              AND busy = 0
-              AND latitude IS NOT NULL
-              AND longitude IS NOT NULL
-              AND user_id NOT IN (
-                    SELECT driver_id
-                    FROM ride_rejections
-                    WHERE ride_id = ?
-              )
-            """
-            ,
-            (ride_id,),
-        ).fetchall()
-
-        if not driver_rows:
-            return None
-
-        nearest_driver_id = None
-        nearest_distance = None
-
-        for row in driver_rows:
-            dist = _haversine_km(
-                pickup_lat,
-                pickup_lon,
-                float(row["latitude"]),
-                float(row["longitude"]),
-            )
-            if nearest_distance is None or dist < nearest_distance:
-                nearest_distance = dist
-                nearest_driver_id = int(row["user_id"])
-
-        if nearest_driver_id is None:
-            return None
-
-        marked_busy = connection.execute(
-            """
-            UPDATE drivers
-            SET busy = 1, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND online = 1 AND busy = 0
-            """,
-            (nearest_driver_id,),
-        )
-        if marked_busy.rowcount == 0:
-            return None
-
-        assigned = connection.execute(
-            """
-            UPDATE rides
-            SET driver_id = ?, status = 'offered', updated_at = CURRENT_TIMESTAMP
-            WHERE ride_id = ? AND status = 'requested' AND driver_id IS NULL
-            """,
-            (nearest_driver_id, ride_id),
-        )
-        if assigned.rowcount == 0:
-            connection.execute(
-                """
-                UPDATE drivers
-                SET busy = 0, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-                """,
-                (nearest_driver_id,),
-            )
-            return None
-
-        return nearest_driver_id
-
-
-def get_ride_by_id(ride_id: str) -> dict[str, Any] | None:
-    with get_connection() as connection:
-        row = connection.execute(
-            "SELECT * FROM rides WHERE ride_id = ?",
-            (ride_id,),
-        ).fetchone()
-
-    if not row:
-        return None
-
+def _ride_dict_from_row(row: Any) -> dict[str, Any]:
     return {
         "ride_id": row["ride_id"],
         "customer_id": int(row["customer_id"]),
@@ -271,83 +189,208 @@ def get_ride_by_id(ride_id: str) -> dict[str, Any] | None:
     }
 
 
-def accept_offered_ride_for_driver(driver_id: int) -> dict[str, Any] | None:
+def get_ride_by_id(ride_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM rides WHERE ride_id = ?",
+            (ride_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return _ride_dict_from_row(row)
+
+
+def offer_ride_to_nearby_drivers(
+    ride_id: str, radius_km: float = DRIVER_SEARCH_RADIUS_KM
+) -> list[int]:
+    with get_connection() as connection:
+        ride = connection.execute(
+            """
+            SELECT ride_id, pickup_lat, pickup_lon
+            FROM rides
+            WHERE ride_id = ? AND status = 'requested' AND driver_id IS NULL
+            """,
+            (ride_id,),
+        ).fetchone()
+        if not ride:
+            return []
+
+        pickup_lat = float(ride["pickup_lat"])
+        pickup_lon = float(ride["pickup_lon"])
+
+        candidates = connection.execute(
+            """
+            SELECT user_id, latitude, longitude
+            FROM drivers
+            WHERE online = 1 AND busy = 0
+              AND latitude IS NOT NULL
+              AND longitude IS NOT NULL
+            """
+        ).fetchall()
+
+        offered_driver_ids: list[int] = []
+        for row in candidates:
+            distance = _haversine_km(
+                pickup_lat,
+                pickup_lon,
+                float(row["latitude"]),
+                float(row["longitude"]),
+            )
+            if distance <= radius_km:
+                driver_id = int(row["user_id"])
+                connection.execute(
+                    """
+                    INSERT INTO ride_offers (ride_id, driver_id, status)
+                    VALUES (?, ?, 'offered')
+                    ON CONFLICT(ride_id, driver_id) DO NOTHING
+                    """,
+                    (ride_id, driver_id),
+                )
+                offered_driver_ids.append(driver_id)
+
+        return offered_driver_ids
+
+
+def get_next_offered_ride_for_driver(driver_id: int) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute(
             """
-            SELECT *
-            FROM rides
-            WHERE driver_id = ? AND status = 'offered'
-            ORDER BY created_at DESC
+            SELECT r.*
+            FROM ride_offers o
+            JOIN rides r ON r.ride_id = o.ride_id
+            WHERE o.driver_id = ?
+              AND o.status = 'offered'
+              AND r.status = 'requested'
+              AND r.driver_id IS NULL
+            ORDER BY o.created_at ASC
             LIMIT 1
             """,
             (driver_id,),
         ).fetchone()
-        if not row:
-            return None
-
-        updated = connection.execute(
-            """
-            UPDATE rides
-            SET status = 'assigned', updated_at = CURRENT_TIMESTAMP
-            WHERE ride_id = ? AND driver_id = ? AND status = 'offered'
-            """,
-            (row["ride_id"], driver_id),
-        )
-        if updated.rowcount == 0:
-            return None
-
-    return get_ride_by_id(row["ride_id"])
+    if not row:
+        return None
+    return _ride_dict_from_row(row)
 
 
-def reject_offered_ride_for_driver(driver_id: int) -> dict[str, Any] | None:
+def accept_next_offered_ride_for_driver(driver_id: int) -> dict[str, Any] | None:
     with get_connection() as connection:
-        row = connection.execute(
+        while True:
+            offer_row = connection.execute(
+                """
+                SELECT o.ride_id
+                FROM ride_offers o
+                JOIN rides r ON r.ride_id = o.ride_id
+                WHERE o.driver_id = ?
+                  AND o.status = 'offered'
+                  AND r.status = 'requested'
+                  AND r.driver_id IS NULL
+                ORDER BY o.created_at ASC
+                LIMIT 1
+                """,
+                (driver_id,),
+            ).fetchone()
+
+            if not offer_row:
+                return None
+
+            ride_id = offer_row["ride_id"]
+            assigned = connection.execute(
+                """
+                UPDATE rides
+                SET driver_id = ?, status = 'assigned', updated_at = CURRENT_TIMESTAMP
+                WHERE ride_id = ? AND status = 'requested' AND driver_id IS NULL
+                """,
+                (driver_id, ride_id),
+            )
+            if assigned.rowcount == 0:
+                connection.execute(
+                    """
+                    UPDATE ride_offers
+                    SET status = 'expired', responded_at = CURRENT_TIMESTAMP
+                    WHERE ride_id = ? AND driver_id = ? AND status = 'offered'
+                    """,
+                    (ride_id, driver_id),
+                )
+                continue
+
+            connection.execute(
+                """
+                UPDATE drivers
+                SET busy = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (driver_id,),
+            )
+            connection.execute(
+                """
+                UPDATE ride_offers
+                SET status = 'accepted', responded_at = CURRENT_TIMESTAMP
+                WHERE ride_id = ? AND driver_id = ? AND status = 'offered'
+                """,
+                (ride_id, driver_id),
+            )
+            connection.execute(
+                """
+                UPDATE ride_offers
+                SET status = 'expired', responded_at = CURRENT_TIMESTAMP
+                WHERE ride_id = ? AND driver_id <> ? AND status = 'offered'
+                """,
+                (ride_id, driver_id),
+            )
+            break
+
+    return get_ride_by_id(ride_id)
+
+
+def reject_next_offered_ride_for_driver(driver_id: int) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        offer_row = connection.execute(
             """
-            SELECT *
-            FROM rides
-            WHERE driver_id = ? AND status = 'offered'
-            ORDER BY created_at DESC
+            SELECT o.ride_id
+            FROM ride_offers o
+            JOIN rides r ON r.ride_id = o.ride_id
+            WHERE o.driver_id = ?
+              AND o.status = 'offered'
+              AND r.status = 'requested'
+              AND r.driver_id IS NULL
+            ORDER BY o.created_at ASC
             LIMIT 1
             """,
             (driver_id,),
         ).fetchone()
-        if not row:
+        if not offer_row:
             return None
 
-        ride_id = row["ride_id"]
-        customer_id = int(row["customer_id"])
-
+        ride_id = offer_row["ride_id"]
         connection.execute(
             """
-            INSERT INTO ride_rejections (ride_id, driver_id)
-            VALUES (?, ?)
-            ON CONFLICT(ride_id, driver_id) DO NOTHING
-            """,
-            (ride_id, driver_id),
-        )
-        connection.execute(
-            """
-            UPDATE rides
-            SET driver_id = NULL, status = 'requested', updated_at = CURRENT_TIMESTAMP
+            UPDATE ride_offers
+            SET status = 'rejected', responded_at = CURRENT_TIMESTAMP
             WHERE ride_id = ? AND driver_id = ? AND status = 'offered'
             """,
             (ride_id, driver_id),
         )
-        connection.execute(
+        ride_row = connection.execute(
+            "SELECT customer_id FROM rides WHERE ride_id = ?",
+            (ride_id,),
+        ).fetchone()
+        pending_count_row = connection.execute(
             """
-            UPDATE drivers
-            SET busy = 0, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
+            SELECT COUNT(*) AS count
+            FROM ride_offers o
+            JOIN rides r ON r.ride_id = o.ride_id
+            WHERE o.driver_id = ?
+              AND o.status = 'offered'
+              AND r.status = 'requested'
+              AND r.driver_id IS NULL
             """,
             (driver_id,),
-        )
+        ).fetchone()
 
-    next_driver_id = assign_next_online_driver(ride_id)
     return {
         "ride_id": ride_id,
-        "customer_id": customer_id,
-        "next_driver_id": next_driver_id,
+        "customer_id": int(ride_row["customer_id"]) if ride_row else None,
+        "pending_count": int(pending_count_row["count"]) if pending_count_row else 0,
     }
 
 
@@ -497,7 +540,7 @@ def get_active_ride_for_driver(driver_id: int) -> dict[str, Any] | None:
             """
             SELECT *
             FROM rides
-            WHERE driver_id = ? AND status IN ('offered', 'assigned', 'in_progress')
+            WHERE driver_id = ? AND status IN ('assigned', 'in_progress')
             ORDER BY created_at DESC
             LIMIT 1
             """,

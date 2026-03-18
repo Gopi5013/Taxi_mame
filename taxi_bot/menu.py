@@ -4,13 +4,15 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from taxi_bot.dispatch import (
-    accept_offered_ride_for_driver,
+    accept_next_offered_ride_for_driver,
     complete_ride_for_driver,
     driver_status_text,
     get_admin_dashboard_data,
     get_active_ride_for_driver,
+    get_driver_display_name,
+    get_next_offered_ride_for_driver,
     is_driver_allowed,
-    reject_offered_ride_for_driver,
+    reject_next_offered_ride_for_driver,
     record_booking_cancellation,
     register_driver,
     set_driver_online,
@@ -77,6 +79,7 @@ def driver_menu_markup() -> InlineKeyboardMarkup:
             InlineKeyboardButton("Start Ride", callback_data="driver:start"),
             InlineKeyboardButton("Complete Ride", callback_data="driver:complete"),
         ],
+        [InlineKeyboardButton("Exit", callback_data="driver:exit")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -254,14 +257,19 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "Driver access denied. Ask admin to create your driver account."
             await query.message.reply_text(text)
             return
-        ride = accept_offered_ride_for_driver(user.id)
+        ride = accept_next_offered_ride_for_driver(user.id)
         if not ride:
-            text = "No offered ride to accept."
+            text = "No offered ride available to accept."
         else:
             text = f"Ride {ride['ride_id']} accepted."
+            driver_name = get_driver_display_name(user.id)
             await context.bot.send_message(
                 chat_id=ride["customer_id"],
-                text=f"Driver accepted your ride. Ride ID: {ride['ride_id']}",
+                text=(
+                    f"Driver accepted your ride. Ride ID: {ride['ride_id']}\n"
+                    f"Driver: {driver_name}\n"
+                    "Driver is ready to pick you up."
+                ),
             )
     elif data == "driver:reject":
         user = query.from_user
@@ -269,30 +277,27 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "Driver access denied. Ask admin to create your driver account."
             await query.message.reply_text(text)
             return
-        result = reject_offered_ride_for_driver(user.id)
+        result = reject_next_offered_ride_for_driver(user.id)
         if not result:
             text = "No offered ride to reject."
         else:
-            text = "Ride rejected. Searching for another driver."
-            next_driver_id = result.get("next_driver_id")
-            ride_id = result["ride_id"]
-            customer_id = result["customer_id"]
-
-            if next_driver_id is None:
-                await context.bot.send_message(
-                    chat_id=customer_id,
-                    text="A driver rejected your ride. We are still searching for available drivers.",
-                )
+            pending_count = int(result.get("pending_count") or 0)
+            if pending_count > 0:
+                next_offer = get_next_offered_ride_for_driver(user.id)
+                if next_offer:
+                    text = (
+                        "Ride rejected. Next queued ride is ready.\n"
+                        f"Ride ID: {next_offer['ride_id']}\n"
+                        f"Distance: {next_offer['distance_km']:.2f} km\n"
+                        f"Estimated fare: Rs {next_offer['total_amount']:.2f}\n"
+                        "Tap Accept Ride or Reject Ride."
+                    )
+                else:
+                    text = "Ride rejected. Waiting for next ride request."
             else:
-                await context.bot.send_message(
-                    chat_id=next_driver_id,
-                    text=(
-                        "New ride request for you.\n"
-                        f"Ride ID: {ride_id}\n"
-                        "Please Accept or Reject from Driver panel."
-                    ),
-                    reply_markup=driver_menu_markup(),
-                )
+                text = "Ride rejected. No other queued rides right now."
+    elif data == "driver:exit":
+        text = "Exited driver panel. Use /driver whenever you are ready."
     elif data == "driver:complete":
         user = query.from_user
         if not is_driver_allowed(user.id):

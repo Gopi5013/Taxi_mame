@@ -146,6 +146,20 @@ def _init_sqlite(connection: DBConnection) -> None:
     )
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS ride_offers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ride_id TEXT NOT NULL,
+            driver_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'offered',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            responded_at TEXT,
+            UNIQUE(ride_id, driver_id),
+            FOREIGN KEY(ride_id) REFERENCES rides(ride_id)
+        )
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS ride_rejections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ride_id TEXT NOT NULL,
@@ -237,6 +251,20 @@ def _init_postgres(connection: DBConnection) -> None:
             id BIGSERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ride_offers (
+            id BIGSERIAL PRIMARY KEY,
+            ride_id TEXT NOT NULL,
+            driver_id BIGINT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'offered',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            responded_at TIMESTAMPTZ,
+            UNIQUE(ride_id, driver_id),
+            FOREIGN KEY(ride_id) REFERENCES rides(ride_id)
         )
         """
     )

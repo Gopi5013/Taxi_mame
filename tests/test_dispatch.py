@@ -3,15 +3,15 @@ import sqlite3
 
 import taxi_bot.dispatch as dispatch_module
 from taxi_bot.dispatch import (
-    accept_offered_ride_for_driver,
-    assign_next_online_driver,
+    accept_next_offered_ride_for_driver,
     complete_ride_for_driver,
     create_ride,
     create_support_ticket,
     get_admin_dashboard_data,
     grant_driver_access,
     is_driver_allowed,
-    reject_offered_ride_for_driver,
+    offer_ride_to_nearby_drivers,
+    reject_next_offered_ride_for_driver,
     record_booking_cancellation,
     register_driver,
     set_driver_online,
@@ -106,11 +106,13 @@ class DispatchTests(unittest.TestCase):
         )
         self.connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS ride_rejections (
+            CREATE TABLE IF NOT EXISTS ride_offers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ride_id TEXT NOT NULL,
                 driver_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'offered',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                responded_at TEXT,
                 UNIQUE(ride_id, driver_id)
             )
             """
@@ -122,7 +124,7 @@ class DispatchTests(unittest.TestCase):
         dispatch_module.get_connection = self._old_dispatch_get_connection
         self.connection.close()
 
-    def test_assigns_nearest_online_driver(self) -> None:
+    def test_offers_ride_to_nearby_drivers_within_radius(self) -> None:
         register_driver(101, "Near Driver", "near")
         register_driver(202, "Far Driver", "far")
         set_driver_online(101, True)
@@ -137,8 +139,9 @@ class DispatchTests(unittest.TestCase):
             distance_km=2.0,
             total_amount=60.0,
         )
-        assigned = assign_next_online_driver(ride_id)
-        self.assertEqual(assigned, 101)
+        offered = offer_ride_to_nearby_drivers(ride_id, radius_km=5.0)
+        self.assertIn(101, offered)
+        self.assertNotIn(202, offered)
 
     def test_ride_lifecycle_start_and_complete(self) -> None:
         register_driver(303, "Lifecycle Driver", "life")
@@ -152,8 +155,9 @@ class DispatchTests(unittest.TestCase):
             distance_km=3.0,
             total_amount=90.0,
         )
-        self.assertEqual(assign_next_online_driver(ride_id), 303)
-        self.assertIsNotNone(accept_offered_ride_for_driver(303))
+        offered = offer_ride_to_nearby_drivers(ride_id, radius_km=5.0)
+        self.assertIn(303, offered)
+        self.assertIsNotNone(accept_next_offered_ride_for_driver(303))
 
         started = start_ride_for_driver(303)
         self.assertIsNotNone(started)
@@ -188,8 +192,8 @@ class DispatchTests(unittest.TestCase):
             distance_km=3.0,
             total_amount=90.0,
         )
-        self.assertEqual(assign_next_online_driver(ride_id), 303)
-        self.assertIsNotNone(accept_offered_ride_for_driver(303))
+        offer_ride_to_nearby_drivers(ride_id, radius_km=5.0)
+        self.assertIsNotNone(accept_next_offered_ride_for_driver(303))
         self.assertIsNotNone(start_ride_for_driver(303))
         self.assertIsNotNone(complete_ride_for_driver(303))
 
@@ -274,25 +278,35 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(dashboard["customer_feedback_count"], 1)
         self.assertEqual(dashboard["driver_feedback_count"], 1)
 
-    def test_reject_reassigns_to_next_driver(self) -> None:
-        register_driver(101, "Near Driver", "near")
-        register_driver(202, "Next Driver", "next")
+    def test_reject_moves_driver_to_next_queued_offer(self) -> None:
+        register_driver(101, "Queue Driver", "queue")
+        register_driver(202, "Another Driver", "another")
         set_driver_online(101, True)
         set_driver_online(202, True)
         update_driver_location(101, 12.9716, 77.5946)
         update_driver_location(202, 12.9750, 77.6000)
 
-        ride_id = create_ride(
+        ride_id_1 = create_ride(
             customer_id=999,
             pickup=(12.9720, 77.5950),
             drop=(12.9800, 77.6000),
             distance_km=2.0,
             total_amount=60.0,
         )
-        self.assertEqual(assign_next_online_driver(ride_id), 101)
-        result = reject_offered_ride_for_driver(101)
+        ride_id_2 = create_ride(
+            customer_id=1000,
+            pickup=(12.9722, 77.5952),
+            drop=(12.9810, 77.6010),
+            distance_km=2.5,
+            total_amount=75.0,
+        )
+        offer_ride_to_nearby_drivers(ride_id_1, radius_km=5.0)
+        offer_ride_to_nearby_drivers(ride_id_2, radius_km=5.0)
+
+        result = reject_next_offered_ride_for_driver(101)
         self.assertIsNotNone(result)
-        self.assertEqual(result["next_driver_id"], 202)
+        self.assertEqual(result["ride_id"], ride_id_1)
+        self.assertGreaterEqual(int(result["pending_count"]), 1)
 
 
 if __name__ == "__main__":

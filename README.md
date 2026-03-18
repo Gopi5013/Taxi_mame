@@ -58,8 +58,9 @@ python main.py
 - Tap `Go Online` to receive ride assignments
 - Send current Telegram location after going online
 - When assigned, tap `Start Ride` and then `Complete Ride`
-- Driver must accept the offered ride before `Start Ride`
-- Driver can reject an offered ride; system reassigns to next available driver
+- Driver receives queued ride offers and must `Accept Ride` before `Start Ride`
+- Driver can `Reject Ride` to move to the next queued ride
+- Driver panel also includes `Exit`
 - Driver assignment uses nearest online driver by distance to pickup
 - After completion, both customer and driver are prompted for feedback (`1-5` + optional comment)
 
@@ -70,6 +71,8 @@ python main.py
 - `Contact Support`: creates a support ticket ID and confirms submission
 - Pickup/drop coordinates are reverse-geocoded to place names when network is available (falls back to coordinates)
 - Booking confirmation delay is `10` seconds
+- Ride requests are offered to online drivers within `5 km`; first accept wins
+- Customer sees driver details only after a driver accepts
 
 ## Admin Flow
 
