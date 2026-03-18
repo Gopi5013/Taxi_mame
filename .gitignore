@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+myenv/
+.venv/
+venv/
+
+# Environment variables / secrets
+.env
+
+# Local databases and runtime files
+*.db
+*.db-journal
+data/*.sqlite3
+data/test_db_*/
+data/*.tmp
+
+# OS/editor
+.DS_Store
+Thumbs.db
