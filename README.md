@@ -42,6 +42,7 @@ pip install -r requirements.txt
 ```env
 BOT_TOKEN=your_telegram_bot_token
 ADMIN_PASSWORD=your_admin_password
+DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
 ```
 
 ## Run
@@ -92,4 +93,19 @@ python -m unittest discover -s tests -v
 - No Docker.
 - No webhook.
 - Bot runs only in polling mode.
-- SQLite DB path: `data/taxi_bot.sqlite3`
+- Supports Neon Postgres using `DATABASE_URL`.
+- If `DATABASE_URL` is not set, falls back to SQLite at `data/taxi_bot.sqlite3`.
+
+## Neon + Render Deployment
+
+1. Create a Neon project and database.
+2. Copy Neon connection string and ensure it includes `sslmode=require`.
+3. In Render, create a **Background Worker** from this repo.
+4. Set build/start commands:
+   - Build: `pip install -r requirements.txt`
+   - Start: `python main.py`
+5. Add Render environment variables:
+   - `BOT_TOKEN`
+   - `ADMIN_PASSWORD`
+   - `DATABASE_URL` (Neon connection string)
+6. Deploy and verify via `/start`, `/admin`, `/myid`, `/driver`.
