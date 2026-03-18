@@ -4,11 +4,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from taxi_bot.dispatch import (
+    accept_offered_ride_for_driver,
     complete_ride_for_driver,
     driver_status_text,
     get_admin_dashboard_data,
     get_active_ride_for_driver,
     is_driver_allowed,
+    reject_offered_ride_for_driver,
     record_booking_cancellation,
     register_driver,
     set_driver_online,
@@ -65,6 +67,10 @@ def driver_menu_markup() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("Go Online", callback_data="driver:online"),
             InlineKeyboardButton("Go Offline", callback_data="driver:offline"),
+        ],
+        [
+            InlineKeyboardButton("Accept Ride", callback_data="driver:accept"),
+            InlineKeyboardButton("Reject Ride", callback_data="driver:reject"),
         ],
         [
             InlineKeyboardButton("My Status", callback_data="driver:status"),
@@ -242,6 +248,51 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=ride["customer_id"],
                 text=f"Driver started your ride. Ride ID: {ride['ride_id']}",
             )
+    elif data == "driver:accept":
+        user = query.from_user
+        if not is_driver_allowed(user.id):
+            text = "Driver access denied. Ask admin to create your driver account."
+            await query.message.reply_text(text)
+            return
+        ride = accept_offered_ride_for_driver(user.id)
+        if not ride:
+            text = "No offered ride to accept."
+        else:
+            text = f"Ride {ride['ride_id']} accepted."
+            await context.bot.send_message(
+                chat_id=ride["customer_id"],
+                text=f"Driver accepted your ride. Ride ID: {ride['ride_id']}",
+            )
+    elif data == "driver:reject":
+        user = query.from_user
+        if not is_driver_allowed(user.id):
+            text = "Driver access denied. Ask admin to create your driver account."
+            await query.message.reply_text(text)
+            return
+        result = reject_offered_ride_for_driver(user.id)
+        if not result:
+            text = "No offered ride to reject."
+        else:
+            text = "Ride rejected. Searching for another driver."
+            next_driver_id = result.get("next_driver_id")
+            ride_id = result["ride_id"]
+            customer_id = result["customer_id"]
+
+            if next_driver_id is None:
+                await context.bot.send_message(
+                    chat_id=customer_id,
+                    text="A driver rejected your ride. We are still searching for available drivers.",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=next_driver_id,
+                    text=(
+                        "New ride request for you.\n"
+                        f"Ride ID: {ride_id}\n"
+                        "Please Accept or Reject from Driver panel."
+                    ),
+                    reply_markup=driver_menu_markup(),
+                )
     elif data == "driver:complete":
         user = query.from_user
         if not is_driver_allowed(user.id):
@@ -269,7 +320,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=ride["customer_id"],
                 text=(
-                    f"Your ride is completed. Ride ID: {ride['ride_id']}\n"
+                    f"Ride completed successfully. Ride ID: {ride['ride_id']}\n"
                     "Please rate your driver from 1-5 and optional comment.\n"
                     "Example: 5 Smooth and safe ride\n"
                     "Type 'skip' to skip."
@@ -278,7 +329,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=user.id,
                 text=(
-                    f"Please rate the customer for ride {ride['ride_id']} (1-5) and optional comment.\n"
+                    f"Ride completed successfully. Ride ID: {ride['ride_id']}\n"
+                    "Please rate the customer (1-5) and optional comment.\n"
                     "Example: 5 On-time pickup\n"
                     "Type 'skip' to skip."
                 ),

@@ -10,7 +10,6 @@ from taxi_bot.dispatch import (
     assign_next_online_driver,
     create_support_ticket,
     create_ride,
-    get_driver_display_name,
     grant_driver_access,
     is_driver_allowed,
     is_registered_driver,
@@ -139,21 +138,20 @@ async def _send_delayed_booking_success(
                 text="No drivers are online right now. We will assign one soon.",
             )
         else:
-            driver_name = get_driver_display_name(driver_id)
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Driver assigned: {driver_name}.",
+                text="Driver request sent. You will be notified once a driver accepts.",
             )
             await context.bot.send_message(
                 chat_id=driver_id,
                 text=(
-                    "New ride assigned.\n"
+                    "New ride request for you.\n"
                     f"Ride ID: {ride_id}\n"
                     f"Pickup: {pickup_label}\n"
                     f"Drop: {drop_label}\n"
                     f"Distance: {distance:.2f} km\n"
                     f"Estimated fare: Rs {total:.2f}\n\n"
-                    "Use Driver panel and tap Start Ride when pickup begins."
+                    "Use Driver panel and tap Accept Ride or Reject Ride."
                 ),
                 reply_markup=driver_menu_markup(),
             )
